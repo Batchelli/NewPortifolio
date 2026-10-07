@@ -1,0 +1,2 @@
+Coloque aqui os prints dos seus projetos (16:9, ex.: 1280x720)
+e referencie em src/config.js como image: 'projects/arquivo.jpg'.

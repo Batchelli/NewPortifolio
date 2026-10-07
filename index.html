@@ -1,0 +1,183 @@
+<!doctype html>
+<html lang="pt-BR">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+    <title>PortiMax · Portfólio Retrowave</title>
+    <meta name="description" content="Portfólio interativo em 3D: explore um mundo retrowave e descubra meus projetos." />
+    <meta name="theme-color" content="#0a0014" />
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'><defs><linearGradient id='g' x1='0' y1='0' x2='0' y2='1'><stop offset='0' stop-color='%23ffd319'/><stop offset='1' stop-color='%23ff2a9d'/></linearGradient></defs><circle cx='32' cy='32' r='28' fill='url(%23g)'/><rect x='4' y='36' width='56' height='3' fill='%230a0014'/><rect x='4' y='44' width='56' height='4' fill='%230a0014'/><rect x='4' y='53' width='56' height='5' fill='%230a0014'/></svg>" />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Orbitron:wght@500;700;900&family=Press+Start+2P&family=Share+Tech+Mono&family=Mr+Dafoe&display=swap"
+      rel="stylesheet"
+    />
+  </head>
+  <body>
+    <div id="app"></div>
+
+    <!-- Efeito CRT sobre a interface -->
+    <div class="crt-overlay" aria-hidden="true"></div>
+
+    <!-- ============ LOADING ============ -->
+    <section id="loading" class="screen active">
+      <div class="loading-box">
+        <div class="loading-sun"></div>
+        <p class="pixel small">INICIALIZANDO SISTEMA</p>
+        <div class="bar"><div class="bar-fill" id="loading-fill"></div></div>
+        <p class="mono tiny" id="loading-text">carregando...</p>
+      </div>
+    </section>
+
+    <!-- ============ MENU PRINCIPAL ============ -->
+    <section id="menu" class="screen">
+      <div class="menu-inner">
+        <header class="logo">
+          <h1 class="logo-chrome">PORTIMAX</h1>
+          <span class="logo-script">Portfolio</span>
+          <p class="logo-sub" id="owner-line"></p>
+        </header>
+
+        <p class="press-start pixel blink" id="press-start">PRESSIONE QUALQUER TECLA</p>
+
+        <nav class="menu-list" id="main-menu" aria-label="Menu principal" hidden>
+          <button data-action="play">JOGAR</button>
+          <button data-action="projects">PROJETOS</button>
+          <button data-action="controls">CONTROLES</button>
+          <button data-action="about">SOBRE MIM</button>
+          <button data-action="settings">CONFIGURAÇÕES</button>
+        </nav>
+
+        <footer class="menu-footer mono tiny">
+          <span>↑ ↓ NAVEGAR · ENTER SELECIONAR</span>
+          <span id="footer-year"></span>
+        </footer>
+      </div>
+    </section>
+
+    <!-- ============ HUD ============ -->
+    <section id="hud" class="screen">
+      <div class="hud-markers" id="hud-markers"></div>
+      <div class="crosshair"></div>
+
+      <div class="hud-top-left">
+        <div class="hud-counter">
+          <span class="pixel tiny">PROJETOS DESCOBERTOS</span>
+          <strong class="orbitron" id="hud-count">0/0</strong>
+          <div class="hud-progress"><div id="hud-progress-fill"></div></div>
+        </div>
+      </div>
+      <div class="hud-radar mono tiny" id="hud-radar"><kbd>Q</kbd><span>RADAR DE PROJETOS</span></div>
+
+      <div class="hud-route" id="hud-route">
+        <span>◎ ROTA</span>
+        <strong id="hud-route-name"></strong>
+        <span id="hud-route-dist"></span>
+      </div>
+
+      <div class="hud-minimap">
+        <canvas id="minimap" width="200" height="200"></canvas>
+        <span class="pixel tiny minimap-n">N</span>
+      </div>
+      <div class="hud-coords mono tiny" id="hud-coords"></div>
+      <div class="hud-location pixel" id="hud-location"></div>
+
+      <div class="district-banner" id="district-banner" aria-live="polite">
+        <span class="pixel">BAIRRO</span>
+        <strong class="orbitron"></strong>
+        <small class="mono"></small>
+      </div>
+
+      <div class="hud-hints mono tiny" id="hud-hints">
+        <span><kbd>W A S D</kbd> mover</span>
+        <span><kbd>SHIFT</kbd> correr</span>
+        <span><kbd>ESPAÇO</kbd> pular</span>
+        <span><kbd>Q</kbd> radar</span>
+        <span><kbd>TAB</kbd> projetos</span>
+        <span><kbd>ESC</kbd> pausar</span>
+      </div>
+
+      <div class="interact-prompt" id="interact-prompt">
+        <kbd class="key-e">E</kbd>
+        <span class="pixel small" id="interact-text">ABRIR PROJETO</span>
+      </div>
+
+      <div class="toasts" id="toasts"></div>
+
+      <!-- Controles touch (mobile) -->
+      <div class="touch-ui" id="touch-ui">
+        <div class="joystick" id="joystick"><div class="joystick-knob" id="joystick-knob"></div></div>
+        <button class="touch-btn touch-jump" id="touch-jump">▲</button>
+        <button class="touch-btn touch-e" id="touch-e">E</button>
+        <button class="touch-btn touch-pause" id="touch-pause">II</button>
+        <button class="touch-btn touch-scan" id="touch-scan" aria-label="Radar de projetos">◎</button>
+      </div>
+    </section>
+
+    <!-- ============ PAUSA ============ -->
+    <section id="pause" class="screen">
+      <div class="panel panel-small">
+        <h2 class="panel-title orbitron">PAUSADO</h2>
+        <nav class="menu-list" id="pause-menu">
+          <button data-action="resume">CONTINUAR</button>
+          <button data-action="projects">PROJETOS / VIAGEM RÁPIDA</button>
+          <button data-action="controls">CONTROLES</button>
+          <button data-action="settings">CONFIGURAÇÕES</button>
+          <button data-action="quit">MENU PRINCIPAL</button>
+        </nav>
+      </div>
+    </section>
+
+    <!-- ============ PAINÉIS ============ -->
+    <section id="panel-projects" class="screen modal">
+      <div class="panel panel-wide">
+        <h2 class="panel-title orbitron">PROJETOS</h2>
+        <p class="mono small muted">Marque a rota para ir andando (siga o feixe de luz), viaje direto até o pedestal ou abra o site.</p>
+        <div class="project-grid" id="project-grid"></div>
+        <button class="btn-back pixel small" data-back>◀ VOLTAR</button>
+      </div>
+    </section>
+
+    <section id="panel-controls" class="screen modal">
+      <div class="panel">
+        <h2 class="panel-title orbitron">CONTROLES</h2>
+        <ul class="controls-list mono">
+          <li><kbd>W A S D</kbd> / <kbd>SETAS</kbd><span>Mover</span></li>
+          <li><kbd>MOUSE</kbd><span>Olhar ao redor</span></li>
+          <li><kbd>SHIFT</kbd><span>Correr</span></li>
+          <li><kbd>ESPAÇO</kbd><span>Pular</span></li>
+          <li><kbd>E</kbd><span>Abrir projeto / interagir</span></li>
+          <li><kbd>Q</kbd><span>Radar: revela onde estão os projetos</span></li>
+          <li><kbd>TAB</kbd><span>Lista de projetos e viagem rápida</span></li>
+          <li><kbd>M</kbd><span>Ligar / desligar música</span></li>
+          <li><kbd>ESC</kbd><span>Pausar</span></li>
+        </ul>
+        <p class="mono small muted">No celular: joystick à esquerda, arraste à direita para olhar.</p>
+        <button class="btn-back pixel small" data-back>◀ VOLTAR</button>
+      </div>
+    </section>
+
+    <section id="panel-about" class="screen modal">
+      <div class="panel">
+        <h2 class="panel-title orbitron">SOBRE MIM</h2>
+        <div id="about-content" class="about mono"></div>
+        <button class="btn-back pixel small" data-back>◀ VOLTAR</button>
+      </div>
+    </section>
+
+    <section id="panel-settings" class="screen modal">
+      <div class="panel">
+        <h2 class="panel-title orbitron">CONFIGURAÇÕES</h2>
+        <div class="settings mono" id="settings"></div>
+        <button class="btn-back pixel small" data-back>◀ VOLTAR</button>
+      </div>
+    </section>
+
+    <!-- Aviso quando o pointer lock falha -->
+    <div id="click-to-play" class="click-to-play pixel small">CLIQUE PARA CONTINUAR</div>
+
+    <noscript>Este portfólio precisa de JavaScript e WebGL para funcionar.</noscript>
+    <script type="module" src="/src/main.js"></script>
+  </body>
+</html>
