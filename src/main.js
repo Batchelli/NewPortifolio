@@ -7,6 +7,8 @@ import { Player } from './player/Player.js';
 import { TouchControls } from './player/TouchControls.js';
 import { Synth } from './audio/Synth.js';
 import { UI } from './ui/UI.js';
+import { Tablet } from './ui/Tablet.js';
+import './ui/tablet.css';
 import { installPlanetShaders, wrapCoord, wrapDelta, WORLD_SIZE, PLAZA_RADIUS } from './core/Planet.js';
 
 // curvatura do horizonte em todos os materiais (precisa vir antes de compilar qualquer shader)
@@ -20,10 +22,16 @@ if (isTouch) document.body.classList.add('touch');
 /**
  * Estados:
  *  loading → title → menu → entering → play ⇄ paused
- *  "modal" = painel aberto a partir do jogo (ex.: terminal Sobre mim)
+ *  menu e paused = tablet aberto na frente da câmera (NEON OS);
+ *  resuming = tablet guardando, esperando o pointer lock voltar
  */
 let state = 'loading';
-let engine, world, player, ui, touch;
+let engine, world, player, ui, touch, tablet;
+let tabletTimer = null;
+let tabletOpenedAt = 0;
+let escGuardUntil = 0;
+let resumedAt = -Infinity;
+let leavingMenu = false; // JOGAR/viajar a partir do menu: o tablet pode descer
 const synth = new Synth();
 let started = false;
 let transition = null;
@@ -87,8 +95,22 @@ async function boot() {
     owner: OWNER,
     projects: projectItems,
     synth,
-    handlers: { onMenuAction, onPauseAction, onTravel, onTrack, onSettings: applySettings, onModalClosed },
+    handlers: {
+      onPlay,
+      onResume: resume,
+      onQuit: goToMenu,
+      onTravel,
+      onTrack,
+      onSettings: applySettings,
+      getMap,
+      getStats: () => ({ discovered: discovered.size, laps: totalLaps }),
+      onAccent: (hex) => tablet?.setAccent(hex),
+      onBump: () => tablet?.bump(),
+    },
   });
+  // o tablet do jogador: modelo 3D na frente da câmera, com o NEON OS projetado no vidro
+  tablet = new Tablet(engine, ui.os.el);
+  tablet.setEnvironment(engine.scene.environment);
   ui.setDiscovered(discovered);
   // o mundo lê o mesmo Set: faróis e marcadores sabem o que já foi visitado
   world.discovered = discovered;
@@ -111,7 +133,7 @@ async function boot() {
 
   // Gancho para depuração: acesse com ?debug na URL
   if (new URLSearchParams(location.search).has('debug')) {
-    window.__portimax = { engine, world, player, ui, get state() { return state; } };
+    window.__portimax = { engine, world, player, ui, tablet, get state() { return state; } };
   }
 
   setLoading(100, 'pronto!');
@@ -145,7 +167,7 @@ function update(dt, t) {
 
   world.update(dt, t, cam, state === 'play' || state === 'entering' ? 'play' : 'menu');
 
-  if (state === 'play' || state === 'entering' || state === 'paused' || state === 'modal') {
+  if (state === 'play' || state === 'entering' || state === 'paused' || state === 'resuming') {
     const yaw = new THREE.Euler().setFromQuaternion(cam.quaternion, 'YXZ').y;
     ui.drawMinimap(world, player.position, yaw);
     markerState.trackedId = trackedId;
@@ -163,7 +185,15 @@ function update(dt, t) {
     checkLap();
     updateLocation();
   }
-  engine.setFocus(state === 'play' && world.focused ? world.focused.reveal : 0, dt);
+  // tablet na mão: acompanha a câmera; o mundo ao fundo escurece e perde cor
+  syncTablet();
+  tablet.update(dt);
+  if (tablet.visible) {
+    ui.os.setGlare(tablet.parX.x, tablet.parY.x);
+    ui.os.update(t);
+  }
+  const focus = state === 'play' && world.focused ? world.focused.reveal : 0;
+  engine.setFocus(Math.max(focus, tablet.amount * 0.6), dt);
   if (state === 'play' || state === 'entering') ui.setCoords(player.position.x / WORLD_SIZE, player.position.z / WORLD_SIZE);
 }
 
@@ -273,32 +303,107 @@ function startFromTitle() {
   synth.setSfx(ui.settings.sfx);
   synth.setMusic(ui.settings.music);
   synth.select();
-  ui.revealMainMenu();
+  ui.hidePressStart();
   state = 'menu';
+  openTablet('menu');
 }
 
-function onMenuAction(action) {
-  if (action === 'play') enterGame();
-  else if (action === 'projects') ui.openModal('panel-projects');
-  else if (action === 'controls') ui.openModal('panel-controls');
-  else if (action === 'about') ui.openModal('panel-about');
-  else if (action === 'settings') ui.openModal('panel-settings');
+/* ---------------- Tablet ---------------- */
+/** Ergue o tablet e liga a tela (home ou direto num app). */
+function openTablet(mode, app = null) {
+  clearTimeout(tabletTimer);
+  leavingMenu = false;
+  document.body.classList.add('tablet-open');
+  ui.setPrompt(false);
+  ui.os.setLocation(currentStreet());
+  if (tablet.isOpen && ui.os.powered) {
+    // já está na mão e ligado: só troca o que está na tela
+    if (app) ui.os.openApp(app);
+    else if (mode !== ui.os.mode) ui.os.reboot(mode);
+    return;
+  }
+  // estava guardado, ou foi reaberto no meio da descida: liga a tela de novo
+  const quick = tablet.visible && tablet.amount > 0.6;
+  ui.os.prepare(mode, app);
+  tablet.open();
+  tabletOpenedAt = performance.now();
+  synth.tabletOpen();
+  tabletTimer = setTimeout(() => ui.os.boot(), quick ? 90 : 420);
 }
 
-function onPauseAction(action) {
-  if (action === 'resume') resume();
-  else if (action === 'projects') ui.openModal('panel-projects');
-  else if (action === 'controls') ui.openModal('panel-controls');
-  else if (action === 'settings') ui.openModal('panel-settings');
-  else if (action === 'quit') goToMenu();
+/**
+ * Desliga a tela e guarda o tablet. A descida começa logo (a linha do CRT colapsa
+ * enquanto ele já sai da frente). `then` roda quando ele já saiu da frente.
+ */
+function closeTablet(then) {
+  clearTimeout(tabletTimer);
+  document.body.classList.remove('tablet-open');
+  if (!tablet.isOpen) {
+    then?.();
+    return;
+  }
+  ui.os.powerOff();
+  synth.tabletClose();
+  tablet.close(0.14);
+  if (then) tabletTimer = setTimeout(then, 280);
+}
+
+/**
+ * Rede de segurança: o tablet sempre combina com o estado do jogo.
+ * No menu e na pausa ele precisa estar na mão (e ligado); jogando, guardado.
+ */
+function syncTablet() {
+  if ((state === 'menu' && !leavingMenu) || state === 'paused') {
+    if (!tablet.isOpen) openTablet(state === 'menu' ? 'menu' : 'game');
+    else if (!ui.os.powered || (ui.os.waitingBoot && performance.now() - tabletOpenedAt > 1500)) {
+      clearTimeout(tabletTimer);
+      if (!ui.os.powered) ui.os.prepare(state === 'menu' ? 'menu' : 'game');
+      ui.os.boot();
+    }
+  } else if ((state === 'play' || state === 'entering') && tablet.isOpen) {
+    closeTablet();
+  }
+}
+
+function currentStreet() {
+  const p = state === 'menu' || state === 'title' ? engine.camera.position : player.position;
+  return world.locate(p.x, p.z).street;
+}
+
+/** Dados do app Mapa (posições "de casa" no planeta). */
+function getMap() {
+  const inGame = state !== 'menu' && state !== 'title';
+  const p = inGame ? player.position : engine.camera.position;
+  const yaw = new THREE.Euler().setFromQuaternion(engine.camera.quaternion, 'YXZ').y;
+  const loc = world.locate(p.x, p.z);
+  return {
+    size: WORLD_SIZE,
+    mapCanvas: world.mapCanvas,
+    player: { x: wrapCoord(p.x), z: wrapCoord(p.z), yaw },
+    location: { street: loc.street, district: loc.district },
+    pedestals: world.pedestals.map((ped) => ({
+      id: ped.item.id,
+      kind: ped.item.kind,
+      index: ped.item.index,
+      title: ped.item.title,
+      subtitle: ped.item.subtitle,
+      color: ped.item.color,
+      x: ped.home.x,
+      z: ped.home.y,
+    })),
+  };
+}
+
+/* ---------------- Ações ---------------- */
+function onPlay() {
+  leavingMenu = true;
+  ui.show('menu', false);
+  closeTablet(() => enterGame());
 }
 
 function enterGame(spawn) {
   synth.init();
-  ui.closeAllModals();
   ui.show('menu', false);
-  ui.show('pause', false);
-  ui.activeMenu = null;
 
   if (spawn) player.spawn(spawn.x, spawn.z, spawn.yaw);
   else if (!started) player.spawn(0, 8, 0);
@@ -325,29 +430,41 @@ function enterGame(spawn) {
   if (!isTouch) player.controls.lock();
 }
 
-function resume() {
-  ui.closeAllModals();
+/** Guarda o tablet e volta a jogar (no PC, depende do pointer lock voltar). */
+function resume(fromKey = false) {
+  if (state !== 'paused') return;
+  closeTablet();
   if (isTouch) {
-    ui.show('pause', false);
-    ui.activeMenu = null;
     state = 'play';
     player.enabled = true;
     return;
   }
-  player.controls.lock();
+  state = 'resuming';
+  resumedAt = performance.now();
+  if (fromKey) {
+    // No Chrome, a ação padrão do ESC (soltar o mouse) roda DEPOIS dos nossos handlers:
+    // travar o mouse ainda dentro do keydown faria o mesmo ESC soltá-lo e reabrir o tablet.
+    // Então o pedido de trava espera a tecla ser solta.
+    window.addEventListener(
+      'keyup',
+      () => {
+        if (state === 'resuming') player.controls.lock();
+      },
+      { once: true },
+    );
+  } else player.controls.lock();
 }
 
-function pause() {
-  if (state !== 'play' && state !== 'entering') return;
+/** ESC / perda do pointer lock durante o jogo: o personagem pega o tablet. */
+function pause(app = null) {
+  if (state !== 'play' && state !== 'entering' && state !== 'resuming') return;
   if (state === 'entering') updateTransitionToEnd();
   state = 'paused';
   player.enabled = false;
   player.releaseKeys();
-  ui.setPrompt(false);
+  ui.setClickToPlay(false);
   lastFocused = null;
-  ui.show('pause', true);
-  ui.pauseMenu.select(0, true);
-  ui.activeMenu = ui.pauseMenu;
+  openTablet('game', app);
 }
 
 function updateTransitionToEnd() {
@@ -355,56 +472,48 @@ function updateTransitionToEnd() {
   updateTransition(0);
 }
 
-/** Abre um painel a partir do jogo (Tab, terminal Sobre mim / Contato). */
-function openFromGame(id) {
-  state = 'modal';
-  player.enabled = false;
-  player.releaseKeys();
-  ui.setPrompt(false);
-  lastFocused = null;
-  ui.openModal(id);
+/** Abre o tablet num app a partir do jogo (Tab, terminal Sobre mim / Contato). */
+function openFromGame(app) {
+  if (state === 'paused') {
+    openTablet('game', app);
+    return;
+  }
+  pause(app);
   if (player.controls.isLocked) player.controls.unlock();
 }
 
-function onModalClosed() {
-  if (state === 'modal' && !ui.modalOpen) {
-    if (isTouch) resume();
-    else ui.setClickToPlay(true);
-  }
-}
-
+/** Volta ao menu principal: o tablet continua na mão e reinicia no modo menu. */
 function goToMenu() {
   state = 'menu';
   player.enabled = false;
-  ui.closeAllModals();
-  ui.show('pause', false);
   ui.show('hud', false);
   ui.setClickToPlay(false);
   ui.show('menu', true);
-  ui.mainMenu.select(0, true);
-  ui.activeMenu = ui.mainMenu;
+  ui.os.reboot('menu');
   if (player.controls.isLocked) player.controls.unlock();
 }
 
 function onTravel(id) {
   const vp = world.viewpointFor(id);
   if (!vp) return;
-  flash();
   if (state === 'menu' || state === 'title') {
-    enterGame(vp);
+    leavingMenu = true;
+    closeTablet(() => {
+      flash();
+      enterGame(vp);
+    });
     return;
   }
+  closeTablet(() => flash());
   player.spawn(vp.x, vp.z, vp.yaw);
   lap.x = 0;
   lap.z = 0;
   lastFocused = null;
-  if (state === 'paused') ui.show('pause', false);
-  state = 'modal';
-  ui.closeAllModals();
-  ui.activeMenu = null;
-  if (isTouch) resume();
-  else {
-    ui.setClickToPlay(true);
+  if (isTouch) {
+    state = 'play';
+    player.enabled = true;
+  } else {
+    state = 'resuming';
     player.controls.lock();
   }
 }
@@ -424,22 +533,11 @@ function setTracked(id) {
   return item;
 }
 
-/** Marca (ou desmarca) a rota até um projeto e volta para o jogo. */
+/** Marca (ou desmarca) a rota até um projeto; o tablet continua aberto. */
 function onTrack(id) {
   const item = setTracked(id);
-  if (state === 'menu' || state === 'title') enterGame();
-  else {
-    if (state === 'paused') ui.show('pause', false);
-    state = 'modal';
-    ui.closeAllModals();
-    ui.activeMenu = null;
-    if (isTouch) resume();
-    else {
-      ui.setClickToPlay(true);
-      player.controls.lock();
-    }
-  }
-  if (item) ui.toast('◎ ROTA MARCADA', `${item.title} · siga o feixe de luz`);
+  if (item) ui.os.notify('◎ ROTA MARCADA', `${item.title} · siga o feixe de luz`);
+  else ui.os.notify('ROTA DESMARCADA');
 }
 
 function interact() {
@@ -447,10 +545,10 @@ function interact() {
   const item = world.focused.item;
   if (item.kind === 'about') {
     synth.select();
-    openFromGame('panel-about');
+    openFromGame('about');
   } else if (item.kind === 'contact') {
     synth.select();
-    openFromGame('panel-about');
+    openFromGame('contact');
   } else if (item.url) {
     synth.open();
     ui.toast('ABRINDO PROJETO...', item.title);
@@ -475,23 +573,35 @@ function setupPointerLock() {
   const controls = player.controls;
   controls.addEventListener('lock', () => {
     ui.setClickToPlay(false);
-    if (state === 'paused' || state === 'modal') {
-      ui.show('pause', false);
-      ui.closeAllModals();
-      ui.activeMenu = null;
+    if (state === 'resuming' || state === 'paused') {
+      if (state === 'paused') closeTablet();
       state = 'play';
       player.enabled = true;
     }
   });
   controls.addEventListener('unlock', () => {
-    if (state === 'play' || state === 'entering') pause();
+    // o mouse caiu logo depois de voltar ao jogo (ex.: o navegador devolveu e tomou de volta):
+    // não é o jogador pedindo o tablet, só pede um clique
+    if (state === 'play' && performance.now() - resumedAt < 600) {
+      state = 'resuming';
+      player.enabled = false;
+      player.releaseKeys();
+      ui.setClickToPlay(true);
+      return;
+    }
+    if (state === 'play' || state === 'entering') {
+      // só o ESC que soltou o mouse é ignorado (ele pode chegar logo depois deste evento)
+      escGuardUntil = performance.now() + 250;
+      pause();
+    }
   });
   document.addEventListener('pointerlockerror', () => {
-    if (state === 'entering' || state === 'paused' || state === 'modal') ui.setClickToPlay(true);
+    // o navegador recusou (ex.: ESC não conta como gesto): pede um clique
+    if (state === 'entering' || state === 'resuming') ui.setClickToPlay(true);
   });
   document.getElementById('click-to-play').addEventListener('click', () => controls.lock());
   document.getElementById('app').addEventListener('click', () => {
-    if (!isTouch && ['modal', 'entering', 'play'].includes(state) && !controls.isLocked && !ui.modalOpen) controls.lock();
+    if (!isTouch && ['resuming', 'entering', 'play'].includes(state) && !controls.isLocked) controls.lock();
   });
 }
 
@@ -506,19 +616,35 @@ function setupInput() {
     if (e.code === 'KeyM' && synth.ctx) {
       ui.settings.music = !ui.settings.music;
       ui.saveSettings();
-      ui.renderSettings();
-      ui.toast(ui.settings.music ? '♪ MÚSICA LIGADA' : '♪ MÚSICA DESLIGADA');
+      const msg = ui.settings.music ? '♪ MÚSICA LIGADA' : '♪ MÚSICA DESLIGADA';
+      if (tablet.isOpen) ui.os.notify(msg);
+      else ui.toast(msg);
       return;
     }
-    if (state === 'menu' || state === 'paused' || state === 'modal') {
-      if (ui.handleMenuKey(e)) return;
+    // esperando o clique para voltar ao jogo: TAB pega o tablet de novo
+    // (ESC não: apertar ESC duas vezes para fechar faria o tablet voltar)
+    if (state === 'resuming' && e.code === 'Tab') {
+      e.preventDefault();
+      pause('projects');
+      return;
+    }
+    if (state === 'menu' || state === 'paused') {
+      // TAB com o tablet aberto: guarda e volta a jogar
+      if (e.code === 'Tab' && state === 'paused') {
+        e.preventDefault();
+        resume();
+        return;
+      }
+      // o mesmo ESC que soltou o pointer lock não pode fechar o tablet que acabou de abrir
+      if (e.code === 'Escape' && performance.now() < escGuardUntil) return;
+      if (ui.os.handleKey(e)) return;
     }
     if (state === 'play') {
       if (e.code === 'KeyE') interact();
       else if (e.code === 'KeyQ') scan();
       else if (e.code === 'Tab') {
         e.preventDefault();
-        openFromGame('panel-projects');
+        openFromGame('projects');
       }
     }
     if (e.code === 'Tab') e.preventDefault();
@@ -556,6 +682,7 @@ function onResize() {
   player.baseFov = fov;
   engine.camera.fov = fov;
   engine.camera.updateProjectionMatrix();
+  tablet?.resize();
 }
 
 /* ------------------------------------------------------------------ */

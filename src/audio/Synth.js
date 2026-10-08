@@ -199,6 +199,17 @@ export class Synth {
     this.osc('square', 880, this.ctx.currentTime, 0.04, 0.12, this.sfxBus, { release: 0.04 });
   }
 
+  /** Mouse passando sobre um botão do tablet: "tick" curto e agudo, quase um clique háptico. */
+  hover() {
+    if (!this.ready()) return;
+    const t = this.ctx.currentTime;
+    if (t - (this.lastHover || 0) < 0.04) return; // varrer vários botões não vira metralhadora
+    this.lastHover = t;
+    const o = this.osc('triangle', 1760, t, 0.018, 0.07, this.sfxBus, { attack: 0.002, release: 0.03 });
+    o.frequency.exponentialRampToValueAtTime(2640, t + 0.018);
+    this.noiseHit(t, 0.015, 0.035, 7000, 'highpass', this.sfxBus);
+  }
+
   select() {
     if (!this.ready()) return;
     const t = this.ctx.currentTime;
@@ -272,6 +283,45 @@ export class Synth {
     }
     const sweep = this.osc('sawtooth', 90, t, 0.7, 0.05, this.sfxBus, { filter: 600, attack: 0.05, release: 0.4 });
     sweep.frequency.exponentialRampToValueAtTime(260, t + 0.7);
+  }
+
+  /** Ruído filtrado com o filtro varrendo (o "whoosh" de um objeto passando). */
+  whoosh(t, dur, from, to, gain) {
+    const ctx = this.ctx;
+    const src = ctx.createBufferSource();
+    src.buffer = this.noise;
+    src.loop = true;
+    const f = ctx.createBiquadFilter();
+    f.type = 'bandpass';
+    f.Q.value = 1.4;
+    f.frequency.setValueAtTime(from, t);
+    f.frequency.exponentialRampToValueAtTime(to, t + dur);
+    const g = ctx.createGain();
+    g.gain.setValueAtTime(0, t);
+    g.gain.linearRampToValueAtTime(gain, t + dur * 0.4);
+    g.gain.exponentialRampToValueAtTime(0.001, t + dur);
+    src.connect(f).connect(g).connect(this.sfxBus);
+    src.start(t);
+    src.stop(t + dur + 0.05);
+  }
+
+  /** Tablet subindo + tela ligando (acorde de boot). */
+  tabletOpen() {
+    if (!this.ready()) return;
+    const t = this.ctx.currentTime;
+    this.whoosh(t, 0.45, 300, 2400, 0.22);
+    const hum = this.osc('sawtooth', 55, t + 0.35, 0.25, 0.05, this.sfxBus, { filter: 500, release: 0.2 });
+    hum.frequency.exponentialRampToValueAtTime(110, t + 0.6);
+    [64, 71, 76, 83].forEach((n, i) => this.osc('triangle', NOTE(n), t + 0.5 + i * 0.07, 0.35, 0.07, this.sfxBus, { attack: 0.01, release: 0.4 }));
+  }
+
+  /** Tela desligando + tablet guardado. */
+  tabletClose() {
+    if (!this.ready()) return;
+    const t = this.ctx.currentTime;
+    const o = this.osc('sine', 1400, t, 0.18, 0.08, this.sfxBus, { release: 0.06 });
+    o.frequency.exponentialRampToValueAtTime(90, t + 0.18);
+    this.whoosh(t + 0.15, 0.35, 2000, 260, 0.16);
   }
 
   /** Chegada num bairro novo: acorde curto e suave. */

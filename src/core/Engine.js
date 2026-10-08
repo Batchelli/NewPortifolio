@@ -124,6 +124,18 @@ export class Engine {
     this.resize();
   }
 
+  /**
+   * Cena desenhada por cima do mundo (limpa só a profundidade): objetos "na mão" do jogador,
+   * como o tablet, nunca atravessam paredes e ainda passam pelo bloom e pelo CRT.
+   */
+  addOverlay(scene) {
+    const pass = new RenderPass(scene, this.camera);
+    pass.clear = false;
+    pass.clearDepth = true;
+    this.composer.insertPass(pass, 1);
+    return pass;
+  }
+
   /** Intensidade do "modo foco" (0 a 1), suavizada. */
   setFocus(target, dt) {
     const u = this.crt.uniforms.uFocus;

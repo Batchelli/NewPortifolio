@@ -1,48 +1,11 @@
 import { DISTRICTS } from '../core/CityPlan.js';
 import { Markers } from './Markers.js';
+import { TabletOS } from './TabletOS.js';
 
 const $ = (id) => document.getElementById(id);
 
 const SETTINGS_KEY = 'portimax-settings';
 const DEFAULT_SETTINGS = { quality: 'high', music: true, sfx: true, crt: true, sensitivity: 1 };
-
-/** Menu navegável por teclado (↑ ↓ ENTER) e mouse, no estilo arcade. */
-class Menu {
-  constructor(nav, onAction, synth) {
-    this.nav = nav;
-    this.items = [...nav.querySelectorAll('button')];
-    this.index = 0;
-    this.synth = synth;
-    this.items.forEach((btn, i) => {
-      btn.addEventListener('mouseenter', () => this.select(i));
-      btn.addEventListener('click', () => {
-        this.select(i, true);
-        synth.select();
-        onAction(btn.dataset.action);
-      });
-    });
-    this.onAction = onAction;
-    this.select(0, true);
-  }
-
-  select(i, silent = false) {
-    if (i === this.index && !silent) return;
-    this.index = (i + this.items.length) % this.items.length;
-    this.items.forEach((b, k) => b.classList.toggle('selected', k === this.index));
-    if (!silent) this.synth.blip();
-  }
-
-  handleKey(e) {
-    if (e.code === 'ArrowDown' || e.code === 'KeyS') this.select(this.index + 1);
-    else if (e.code === 'ArrowUp' || e.code === 'KeyW') this.select(this.index - 1);
-    else if (e.code === 'Enter' || e.code === 'Space') {
-      this.synth.select();
-      this.onAction(this.items[this.index].dataset.action);
-    } else return false;
-    e.preventDefault();
-    return true;
-  }
-}
 
 export class UI {
   constructor({ owner, projects, synth, handlers }) {
@@ -50,8 +13,6 @@ export class UI {
     this.projects = projects;
     this.synth = synth;
     this.h = handlers;
-    this.modalStack = [];
-    this.activeMenu = null;
     this.settings = this.loadSettings();
     this.discovered = new Set();
     this.trackedId = null;
@@ -60,24 +21,14 @@ export class UI {
     $('owner-line').textContent = `${owner.name.toUpperCase()} · ${owner.role.toUpperCase()}`;
     $('footer-year').textContent = `© ${new Date().getFullYear()} ${owner.name.toUpperCase()}`;
 
-    this.mainMenu = new Menu($('main-menu'), (a) => this.h.onMenuAction(a), synth);
-    this.pauseMenu = new Menu($('pause-menu'), (a) => this.h.onPauseAction(a), synth);
-
-    document.querySelectorAll('[data-back]').forEach((b) =>
-      b.addEventListener('click', () => {
-        synth.back();
-        this.closeModal();
-      }),
-    );
-    // clicar fora do painel fecha o modal
-    document.querySelectorAll('.modal').forEach((m) =>
-      m.addEventListener('click', (e) => {
-        if (e.target === m) this.closeModal();
-      }),
-    );
-
-    this.renderAbout();
-    this.renderSettings();
+    // menus, projetos, sobre mim, ajustes... tudo roda no sistema do tablet
+    this.os = new TabletOS({
+      owner,
+      projects,
+      synth,
+      settings: this.settings,
+      handlers: { ...handlers, onSettings: () => this.saveSettings() },
+    });
   }
 
   /* ---------------- Telas ---------------- */
@@ -90,161 +41,9 @@ export class UI {
     if (text) $('loading-text').textContent = text;
   }
 
-  revealMainMenu() {
+  /** Some com o "pressione qualquer tecla" (o tablet assume o menu). */
+  hidePressStart() {
     $('press-start').hidden = true;
-    const nav = $('main-menu');
-    nav.hidden = false;
-    nav.classList.add('reveal');
-    this.activeMenu = this.mainMenu;
-  }
-
-  openModal(id) {
-    if (id === 'panel-projects') this.renderProjects();
-    this.modalStack.push(id);
-    this.show(id, true);
-  }
-
-  closeModal() {
-    const id = this.modalStack.pop();
-    if (id) this.show(id, false);
-    this.h.onModalClosed?.(id);
-  }
-
-  closeAllModals() {
-    while (this.modalStack.length) this.show(this.modalStack.pop(), false);
-  }
-
-  get modalOpen() {
-    return this.modalStack.length > 0;
-  }
-
-  handleMenuKey(e) {
-    if (this.modalOpen) {
-      if (e.code === 'Escape' || e.code === 'Backspace') {
-        e.preventDefault();
-        this.synth.back();
-        this.closeModal();
-        return true;
-      }
-      return false;
-    }
-    return this.activeMenu ? this.activeMenu.handleKey(e) : false;
-  }
-
-  /* ---------------- Conteúdo dos painéis ---------------- */
-  renderProjects() {
-    const grid = $('project-grid');
-    grid.innerHTML = '';
-    for (const p of this.projects) {
-      const found = this.discovered.has(p.id);
-      const tracked = this.trackedId === p.id;
-      const card = document.createElement('article');
-      card.className = 'project-card';
-      card.style.setProperty('--c', p.color);
-      card.innerHTML = `
-        <img alt="" loading="lazy" />
-        <span class="status ${found ? 'found' : ''}">${found ? '✔ DESCOBERTO' : '? NÃO VISITADO'}</span>
-        <h3></h3>
-        <p></p>
-        <div class="card-actions">
-          <button type="button" data-track class="${tracked ? 'on' : ''}">${tracked ? '◉ RASTREANDO' : '◎ MARCAR ROTA'}</button>
-          <button type="button" data-travel>▶ IR ATÉ</button>
-          ${p.url ? '<a target="_blank" rel="noopener">ABRIR SITE ↗</a>' : ''}
-        </div>`;
-      card.querySelector('img').src = p.thumb || '';
-      card.querySelector('h3').textContent = p.title;
-      card.querySelector('p').textContent = p.subtitle;
-      const link = card.querySelector('a');
-      if (link) link.href = p.url;
-      card.querySelector('[data-travel]').addEventListener('click', () => {
-        this.synth.select();
-        this.h.onTravel(p.id);
-      });
-      card.querySelector('[data-track]').addEventListener('click', () => {
-        this.synth.select();
-        this.h.onTrack(tracked ? null : p.id);
-      });
-      grid.appendChild(card);
-    }
-  }
-
-  renderAbout() {
-    const o = this.owner;
-    const el = $('about-content');
-    el.innerHTML = '';
-    const h = document.createElement('h3');
-    h.className = 'orbitron';
-    h.style.cssText = 'margin:0 0 4px;font-size:22px;color:#fff';
-    h.textContent = o.name;
-    const role = document.createElement('p');
-    role.style.cssText = 'color:var(--pink);margin:0 0 16px';
-    role.textContent = o.role;
-    el.append(h, role);
-    for (const para of o.about) {
-      const p = document.createElement('p');
-      p.textContent = para;
-      el.appendChild(p);
-    }
-    const chips = document.createElement('div');
-    chips.className = 'chips';
-    for (const s of o.skills) {
-      const c = document.createElement('span');
-      c.className = 'chip';
-      c.textContent = s;
-      chips.appendChild(c);
-    }
-    const links = document.createElement('div');
-    links.className = 'links';
-    for (const l of o.links) {
-      const a = document.createElement('a');
-      a.href = l.url;
-      a.target = '_blank';
-      a.rel = 'noopener';
-      a.textContent = `${l.label} ↗`;
-      links.appendChild(a);
-    }
-    el.append(chips, links);
-  }
-
-  renderSettings() {
-    const s = this.settings;
-    const el = $('settings');
-    el.innerHTML = '';
-    const row = (label, control) => {
-      const r = document.createElement('div');
-      r.className = 'setting-row';
-      const l = document.createElement('span');
-      l.textContent = label;
-      r.append(l, control);
-      el.appendChild(r);
-    };
-    const toggle = (key, labels) => {
-      const b = document.createElement('button');
-      const sync = () => (b.textContent = labels[s[key] === true || s[key] === 'high' ? 0 : 1]);
-      sync();
-      b.addEventListener('click', () => {
-        s[key] = typeof s[key] === 'boolean' ? !s[key] : s[key] === 'high' ? 'low' : 'high';
-        sync();
-        this.synth.blip();
-        this.saveSettings();
-      });
-      return b;
-    };
-    row('Qualidade gráfica', toggle('quality', ['ALTA', 'BAIXA']));
-    row('Música', toggle('music', ['LIGADA', 'DESLIGADA']));
-    row('Efeitos sonoros', toggle('sfx', ['LIGADOS', 'DESLIGADOS']));
-    row('Efeito CRT', toggle('crt', ['LIGADO', 'DESLIGADO']));
-    const range = document.createElement('input');
-    range.type = 'range';
-    range.min = '0.3';
-    range.max = '2.5';
-    range.step = '0.1';
-    range.value = String(s.sensitivity);
-    range.addEventListener('input', () => {
-      s.sensitivity = parseFloat(range.value);
-      this.saveSettings();
-    });
-    row('Sensibilidade do mouse', range);
   }
 
   loadSettings() {
@@ -267,6 +66,7 @@ export class UI {
   /* ---------------- HUD ---------------- */
   setDiscovered(set) {
     this.discovered = set;
+    this.os.setDiscovered(set);
     const total = this.projects.length;
     $('hud-count').textContent = `${set.size}/${total}`;
     $('hud-progress-fill').style.width = `${total ? (set.size / total) * 100 : 0}%`;
@@ -284,6 +84,7 @@ export class UI {
   /** Rota marcada pelo painel de projetos (null = nenhuma). */
   setTracked(item) {
     this.trackedId = item ? item.id : null;
+    this.os.setTracked(this.trackedId);
     const el = $('hud-route');
     el.classList.toggle('visible', !!item);
     if (item) {
@@ -344,6 +145,7 @@ export class UI {
   /** Rua/avenida atual (embaixo das coordenadas), na cor do bairro. */
   setLocation(street, district) {
     this.locEl ??= document.getElementById('hud-location');
+    this.os.setLocation(street);
     const color = district >= 0 ? DISTRICTS[district].color : '#ffd319';
     if (street !== this.locText || color !== this.locColor) {
       this.locText = street;
