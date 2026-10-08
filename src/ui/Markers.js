@@ -1,6 +1,5 @@
 import * as THREE from 'three';
 import { bendDrop, wrapDelta } from '../core/Planet.js';
-import { EMBLEM_Y } from '../world/Beacon.js';
 
 /**
  * Marcadores de HUD sobre os projetos.
@@ -109,10 +108,12 @@ export class Markers {
   }
 
   /** Projeta um ponto do mundo na tela, com a mesma curvatura do shader. */
-  project(camera, x, y, z, W, H, out) {
+  project(camera, x, y, z, W, H, out, bend = true) {
     _v.set(x, y, z).applyMatrix4(camera.matrixWorldInverse);
-    const h = _h.copy(_v).addScaledVector(_up, -_v.dot(_up)).length();
-    _v.addScaledVector(_up, -bendDrop(h));
+    if (bend) {
+      const h = _h.copy(_v).addScaledVector(_up, -_v.dot(_up)).length();
+      _v.addScaledVector(_up, -bendDrop(h));
+    }
     out.depth = -_v.z;
     out.behind = _v.z > -0.1;
     _v.applyMatrix4(camera.projectionMatrix);
@@ -145,7 +146,8 @@ export class Markers {
       const p = m.p;
       m.inworld = p.emblem.uniforms.uAlpha.value > 0.45;
       m.hidden = false;
-      this.project(camera, p.position.x, m.inworld ? EMBLEM_Y : PIN_Y, p.position.z, W, H, m);
+      // o emblema é desenhado sem a curvatura do planeta; o pino acima do holograma, com ela
+      this.project(camera, p.position.x, m.inworld ? p.emblem.mesh.position.y : PIN_Y, p.position.z, W, H, m, !m.inworld);
       m.emPx = m.inworld ? (p.emblem.uniforms.uSize.value * pxPerUnit) / Math.max(m.depth, 1) : 0;
       if (m.onScreen && p.dist > NEAR_HIDE) {
         // a "mira" acerta o centro do losango
@@ -160,7 +162,7 @@ export class Markers {
     // mirando um emblema escondido atrás de um prédio (sem radar/rota, não há raio-x):
     // o cartão ganha um losango pequeno, para não ficar flutuando no nada
     if (aimed && aimed.inworld && !radar && aimed.p.item.id !== trackedId) {
-      aimed.hidden = this.occluded(camera.position, aimed.p.position.x, EMBLEM_Y, aimed.p.position.z);
+      aimed.hidden = this.occluded(camera.position, aimed.p.position.x, aimed.p.emblem.mesh.position.y, aimed.p.position.z);
     }
 
     // 2ª passada: posição final, visibilidade e quem quer mostrar o cartão

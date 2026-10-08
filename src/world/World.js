@@ -8,7 +8,7 @@ import { lampLayout, createLamps } from './Props.js';
 import { Traffic } from './Traffic.js';
 import { createBlimp, createFireflies } from './Blimp.js';
 import { City } from './City.js';
-import { createBeacon, createEmblem, ScanPulse } from './Beacon.js';
+import { createBeacon, createEmblem, emblemY, ScanPulse } from './Beacon.js';
 import { createCityPlan, streetDist, CURB_OUT } from '../core/CityPlan.js';
 import {
   WORLD_SIZE,
@@ -504,7 +504,9 @@ export class World {
 
       // emblema com tamanho angular quase constante: legível de longe, sem tomar a tela de perto
       const em = p.emblem.uniforms;
-      em.uSize.value = THREE.MathUtils.clamp(p.dist * 0.19, 10, 70) * (found && !tracked ? 0.85 : 1) * (tracked ? 1.15 : 1);
+      p.emblem.mesh.position.y = emblemY(p.dist);
+      em.uSize.value = THREE.MathUtils.clamp(p.dist * 0.17, 10, 55) * (found && !tracked ? 0.85 : 1) * (tracked ? 1.15 : 1);
+      em.uTitle.value = tracked ? 1 : 1 - THREE.MathUtils.smoothstep(p.dist, 120, 170);
       em.uAlpha.value = THREE.MathUtils.smoothstep(p.dist, 22, 46) * (found && !tracked ? 0.85 : 1);
       em.uFound.value = found && !tracked ? 1 : 0;
       // raio-x através dos prédios só para o destino da rota e durante o radar (senão vira poluição)

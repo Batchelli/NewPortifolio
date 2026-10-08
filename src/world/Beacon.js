@@ -15,7 +15,16 @@ import { wrapDelta } from '../core/Planet.js';
  */
 
 export const BEACON_HEIGHT = 170;
-export const EMBLEM_Y = 32; // altura do emblema no feixe (acima da maioria dos telhados)
+/**
+ * Altura do emblema no feixe. De perto ele fica na linha dos olhos (título ~1,5 m, losango
+ * abaixo das placas das avenidas); de longe sobe só o necessário para o título não afundar
+ * no horizonte curvo (o chão "cai" até ~2,6° abaixo da linha dos olhos).
+ */
+export const EMBLEM_Y_NEAR = 4.8;
+export const EMBLEM_Y_FAR = 9.5;
+export function emblemY(dist) {
+  return Math.min(Math.max(1.7 + dist * 0.032, EMBLEM_Y_NEAR), EMBLEM_Y_FAR);
+}
 const BEACON_WIDTH = 2.4; // largura mínima (de perto); de longe ela cresce para manter alguns pixels na tela
 
 let beaconGeo = null;
@@ -177,6 +186,7 @@ export function createEmblem(item) {
     uSeed: { value: Math.random() },
     uCircle: { value: item.kind === 'project' ? 0 : 1 },
     uGhost: { value: 0 }, // opacidade do "raio-x" (só para a rota marcada e no radar)
+    uTitle: { value: 1 }, // de longe só o losango: os títulos se amontoariam na linha do horizonte
   };
   const material = (ghost) =>
     new THREE.ShaderMaterial({
@@ -191,18 +201,22 @@ export function createEmblem(item) {
         varying vec2 vUv;
         void main() {
           vUv = uv;
-          // sempre de frente para a câmera
-          vec4 c = bendView(modelViewMatrix * vec4(0.0, 0.0, 0.0, 1.0));
+          // sempre de frente para a câmera e sem a curvatura do planeta: fica na linha do
+          // horizonte em vez de afundar junto com o chão distante (a altura já compensa isso)
+          vec4 c = modelViewMatrix * vec4(0.0, 0.0, 0.0, 1.0);
           c.xy += position.xy * uSize;
           gl_Position = projectionMatrix * c;
         }
       `,
       fragmentShader: /* glsl */ `
         uniform sampler2D uMap; uniform vec3 uColor;
-        uniform float uTime, uAlpha, uFound, uSeed, uCircle, uGhost;
+        uniform float uTime, uAlpha, uFound, uSeed, uCircle, uGhost, uTitle;
         varying vec2 vUv;
         void main() {
           vec3 m = texture2D(uMap, vUv).rgb;
+          // o título fica abaixo do losango (v < ${(1 - (EM_CY + EM_R + 12) / EM).toFixed(3)})
+          float title = mix(uTitle, 1.0, step(${(1 - (EM_CY + EM_R + 12) / EM).toFixed(3)}, vUv.y));
+          m.gb *= title;
           vec2 p = vec2(vUv.x - 0.5, vUv.y - ${(1 - EM_CY / EM).toFixed(4)}) * ${(EM / EM_R).toFixed(4)};
           float d = uCircle > 0.5 ? length(p) / 0.8 : abs(p.x) + abs(p.y);
           float inside = smoothstep(0.97, 0.93, d);
@@ -233,15 +247,13 @@ export function createEmblem(item) {
     });
   const mesh = new THREE.Mesh(emblemGeo, material(false));
   const ghost = new THREE.Mesh(emblemGeo, material(true));
-  for (const m of [mesh, ghost]) {
-    m.position.y = EMBLEM_Y;
-    m.frustumCulled = false;
-  }
+  for (const m of [mesh, ghost]) m.frustumCulled = false;
   ghost.renderOrder = 3;
   ghost.visible = false;
   mesh.renderOrder = 4;
   const group = new THREE.Group();
   group.add(ghost, mesh);
+  group.position.y = EMBLEM_Y_NEAR;
   return { mesh: group, ghost, uniforms };
 }
 
