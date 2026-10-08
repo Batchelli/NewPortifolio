@@ -25,7 +25,7 @@ import {
 import { createBuildings, createAntennas, createLamps, createArcade, STREET_LAMP_SCALE } from './Props.js';
 import { createPalms, createPyramids, WrappedInstances, mulberry } from './Scenery.js';
 import { ledTime, ledMaterial, FOG_GLSL } from './neon.js';
-import { createCarGeometry, createCarMaterial, CAR_PAINTS, CAR_LENGTH, CAR_WIDTH, laneLayout, SIGNAL_GLSL, StreetTraffic } from './StreetTraffic.js';
+import { createCarGeometry, createCarMaterial, CAR_PAINTS, CAR_LENGTH, CAR_WIDTH, CAR_MODELS, pickCarModel, laneLayout, SIGNAL_GLSL, StreetTraffic } from './StreetTraffic.js';
 import { canvasTexture, FONT_HEAD, FONT_PIXEL, FONT_MONO } from '../utils/textures.js';
 
 const UP = new THREE.Vector3(0, 1, 0);
@@ -562,7 +562,7 @@ export class City {
     const hydrants = new Batch();
     const orelhoes = new Batch();
     const shelters = new Batch();
-    this.parked = new Batch();
+    this.parked = Object.fromEntries(CAR_MODELS.map((name) => [name, new Batch()]));
     const treeColors = ['#1f4a4a', '#2c2350', '#3a1f4f', '#1d3b3d', '#46204a', '#24433a'].map((c) => new THREE.Color(c));
     const TREE_P = { [D.CENTRO]: 0.5, [D.VILA]: 0.7, [D.JARDIM]: 0.95, [D.ARCADE]: 0.45, [D.ORLA]: 0.35 };
     const PARK_P = { [D.CENTRO]: 0.38, [D.VILA]: 0.42, [D.JARDIM]: 0.28, [D.ARCADE]: 0.5, [D.ORLA]: 0.22 };
@@ -706,7 +706,9 @@ export class City {
   }
 
   parkCar(x, z, yaw) {
-    this.parked.add(x, z, { yaw, color: new THREE.Color(this.pick(CAR_PAINTS)) });
+    // sorteio próprio para o modelo: não altera a sequência aleatória do resto da cidade
+    this.carRnd ??= mulberry(31);
+    this.parked[pickCarModel(this.carRnd)].add(x, z, { yaw, color: new THREE.Color(this.pick(CAR_PAINTS)) });
     const hl = CAR_LENGTH / 2;
     const hw = CAR_WIDTH / 2;
     const facingZ = Math.abs(Math.cos(yaw)) > 0.7;
@@ -923,7 +925,8 @@ export class City {
       this.addInstanced([mesh], palms);
     }
     // carros estacionados (ruas + estacionamentos) num único draw call
-    this.parked.build(this, [{ geometry: createCarGeometry(), material: createCarMaterial(), color: true }]);
+    const carMat = createCarMaterial();
+    for (const name of CAR_MODELS) this.parked[name].build(this, [{ geometry: createCarGeometry(name), material: carMat, color: true }]);
     if (pyramids.length) {
       const pyr = createPyramids(pyramids);
       pyr[0].castShadow = true;

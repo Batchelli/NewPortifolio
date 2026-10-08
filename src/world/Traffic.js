@@ -3,6 +3,16 @@ import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import { WORLD_SIZE, wrapDelta, wrapCoord } from '../core/Planet.js';
 import { mulberry } from './Scenery.js';
 import { smoothDamp } from './neon.js';
+import {
+  createCarMaterial,
+  createHoverCarGeometry,
+  createHoverLightsGeometry,
+  createHoverLightsMaterial,
+  HOVER_PAINTS,
+  POD_X,
+  POD_Y,
+  NOZZLE_Z,
+} from './CarModels.js';
 
 const TRAIL_LEN = 11;
 
@@ -42,47 +52,34 @@ export class Traffic {
         curLat: 0,
         spring: {},
         along: 0,
+        pitch: 0,
+        roll: 0,
+        yaw: 0,
         color: new THREE.Color(['#ff2a9d', '#00f0ff', '#ffd319', '#b26bff'][i % 4]),
       };
     });
 
-    // carroceria (frente = -z)
-    const body = mergeGeometries([
-      new THREE.BoxGeometry(1.8, 0.5, 4.2),
-      new THREE.BoxGeometry(1.3, 0.45, 1.9).translate(0, 0.45, 0.35),
-      new THREE.BoxGeometry(2.6, 0.08, 0.7).translate(0, 0.05, 1.7), // aerofólio
-      new THREE.BoxGeometry(0.1, 0.5, 0.8).translate(-1.2, 0.25, 1.7),
-      new THREE.BoxGeometry(0.1, 0.5, 0.8).translate(1.2, 0.25, 1.7),
-    ]);
-    this.bodies = new THREE.InstancedMesh(
-      body,
-      new THREE.MeshStandardMaterial({ color: '#0f0620', metalness: 0.85, roughness: 0.35, envMapIntensity: 0.45 }),
-      count,
-    );
+    // carroceria (frente = -z): nave hover com cápsulas de propulsão laterais
+    this.bodies = new THREE.InstancedMesh(createHoverCarGeometry(), createCarMaterial(), count);
     this.bodies.castShadow = true;
+    this.cars.forEach((c, i) => this.bodies.setColorAt(i, new THREE.Color(HOVER_PAINTS[i % HOVER_PAINTS.length])));
 
-    // faróis (branco) e lanternas (cor do carro), em LED
-    const head = new THREE.BoxGeometry(1.5, 0.1, 0.05).translate(0, 0.05, -2.12);
-    const tail = new THREE.BoxGeometry(1.6, 0.12, 0.05).translate(0, 0.1, 2.12);
-    const under = new THREE.PlaneGeometry(1.4, 3.6).rotateX(Math.PI / 2).translate(0, -0.27, 0);
-    const paint = (g, c) => {
-      const arr = new Float32Array(g.attributes.position.count * 3);
-      for (let i = 0; i < arr.length; i += 3) arr.set(c, i);
-      g.setAttribute('color', new THREE.BufferAttribute(arr, 3));
-      return g;
-    };
-    const lightsGeo = mergeGeometries([paint(head, [1.2, 1.2, 1.2]), paint(tail, [1, 1, 1]), paint(under, [0.18, 0.18, 0.18])]);
-    this.lights = new THREE.InstancedMesh(
-      lightsGeo,
-      new THREE.MeshBasicMaterial({ vertexColors: true, side: THREE.DoubleSide }),
-      count,
-    );
-    this.cars.forEach((c, i) => this.lights.setColorAt(i, c.color.clone().lerp(new THREE.Color(1, 1, 1), 0.25).multiplyScalar(1.3)));
-
-    // rastro de luz atrás de cada carro
-    const trailGeo = new THREE.PlaneGeometry(1.1, TRAIL_LEN, 1, 8).rotateX(-Math.PI / 2).translate(0, 0.1, 2.1 + TRAIL_LEN / 2);
+    // luzes: faróis, frisos e lanterna na cor do carro, bocais que pulsam com a potência
+    const lightsGeo = createHoverLightsGeometry();
     const tint = new Float32Array(count * 3);
     this.cars.forEach((c, i) => tint.set([c.color.r, c.color.g, c.color.b], i * 3));
+    lightsGeo.setAttribute('aTint', new THREE.InstancedBufferAttribute(tint, 3));
+    this.power = new THREE.InstancedBufferAttribute(new Float32Array(count).fill(1), 1);
+    this.power.setUsage(THREE.DynamicDrawUsage);
+    lightsGeo.setAttribute('aPower', this.power);
+    this.lights = new THREE.InstancedMesh(lightsGeo, createHoverLightsMaterial(), count);
+
+    // rastro de luz saindo de cada bocal
+    const trailGeo = mergeGeometries(
+      [-1, 1].map((s) =>
+        new THREE.PlaneGeometry(0.55, TRAIL_LEN, 1, 8).rotateX(-Math.PI / 2).translate(s * POD_X, POD_Y, NOZZLE_Z + TRAIL_LEN / 2),
+      ),
+    );
     trailGeo.setAttribute('aTint', new THREE.InstancedBufferAttribute(tint, 3));
     this.trails = new THREE.InstancedMesh(
       trailGeo,
@@ -103,10 +100,10 @@ export class Traffic {
         fragmentShader: /* glsl */ `
           varying vec2 vUv; varying vec3 vTint;
           void main() {
-            float along = vUv.y;               // 1 = junto do carro, 0 = ponta do rastro
+            float along = vUv.y;               // 1 = junto do bocal, 0 = ponta do rastro
             float across = abs(vUv.x - 0.5) * 2.0;
-            float a = pow(clamp(along, 0.0, 1.0), 2.2) * smoothstep(1.0, 0.2, across);
-            gl_FragColor = vec4(mix(vTint, vec3(1.0), 0.3) * a * 0.85, 1.0);
+            float a = pow(clamp(along, 0.0, 1.0), 2.2) * smoothstep(1.0, 0.1, across);
+            gl_FragColor = vec4(mix(vTint, vec3(1.0), 0.3 * along) * a * 0.8, 1.0);
           }
         `,
       }),
@@ -189,23 +186,34 @@ export class Traffic {
       // velocidade integrada: quando não pode ultrapassar, freia para manter distância do carro da frente
       let vTarget = c.speed;
       if (c.follow) vTarget = Math.min(c.speed, c.follow.car.v * THREE.MathUtils.clamp((c.follow.gap - 7) / 9, 0, 1.08));
+      const vPrev = c.v;
       c.v += (vTarget - c.v) * (1 - Math.exp(-3 * dt));
+      const accel = (c.v - vPrev) / Math.max(dt, 1e-3);
       c.along = wrapCoord(c.along + c.dir * c.v * dt);
       c.curAlt = smoothDamp(c.curAlt, target.alt, c.spring, 'alt', 0.26, dt);
       c.curLat = smoothDamp(c.curLat, target.lat, c.spring, 'lat', 0.26, dt);
-      // inclinação: nariz sobe/desce com a subida, asas inclinam na curva
+      // atitude: nariz acompanha a subida (e abaixa ao acelerar), asas inclinam e o nariz
+      // aponta para dentro da manobra; tudo passa por molas para não haver estalos
       const vAlt = c.spring.alt || 0;
       const vLat = c.spring.lat || 0;
-      const pitch = THREE.MathUtils.clamp(Math.atan2(vAlt, Math.max(c.v, 8)), -0.35, 0.35);
       const rightSpeed = c.axis === 'z' ? vLat * -c.dir : vLat * c.dir;
-      const roll = THREE.MathUtils.clamp(-rightSpeed * 0.06, -0.5, 0.5) + Math.sin(t * 0.9 + c.bob) * 0.04;
+      const pitchT = THREE.MathUtils.clamp(Math.atan2(vAlt, Math.max(c.v, 8)) - accel * 0.012, -0.35, 0.35);
+      const rollT = THREE.MathUtils.clamp(-rightSpeed * 0.07, -0.55, 0.55);
+      const yawT = THREE.MathUtils.clamp(-rightSpeed * 0.035, -0.22, 0.22);
+      c.pitch = smoothDamp(c.pitch, pitchT, c.spring, 'pitch', 0.18, dt);
+      c.roll = smoothDamp(c.roll, rollT, c.spring, 'roll', 0.22, dt);
+      c.yaw = smoothDamp(c.yaw, yawT, c.spring, 'yaw', 0.3, dt);
+      const pitch = c.pitch + Math.sin(t * 1.1 + c.bob * 2) * 0.015;
+      const roll = c.roll + Math.sin(t * 0.9 + c.bob) * 0.04;
       const bob = Math.sin(t * 1.3 + c.bob) * 0.3;
+      // potência dos bocais: cresce com a velocidade e na aceleração, com leve tremulação
+      this.power.setX(i, THREE.MathUtils.clamp(0.35 + (0.55 * c.v) / c.speed + accel * 0.05 + Math.sin(t * 37 + i * 3.1) * 0.06, 0.2, 1.3));
       if (c.axis === 'z') {
         p.set(cam.x + wrapDelta(c.curLat - cam.x), c.curAlt + bob, cam.z + wrapDelta(c.along - cam.z));
-        e.set(pitch, c.dir < 0 ? 0 : Math.PI, roll);
+        e.set(pitch, (c.dir < 0 ? 0 : Math.PI) + c.yaw, roll);
       } else {
         p.set(cam.x + wrapDelta(c.along - cam.x), c.curAlt + bob, cam.z + wrapDelta(c.curLat - cam.z));
-        e.set(pitch, c.dir > 0 ? -Math.PI / 2 : Math.PI / 2, roll);
+        e.set(pitch, (c.dir > 0 ? -Math.PI / 2 : Math.PI / 2) + c.yaw, roll);
       }
       q.setFromEuler(e);
       m.compose(p, q, s);
@@ -216,5 +224,6 @@ export class Traffic {
     this.bodies.instanceMatrix.needsUpdate = true;
     this.lights.instanceMatrix.needsUpdate = true;
     this.trails.instanceMatrix.needsUpdate = true;
+    this.power.needsUpdate = true;
   }
 }
